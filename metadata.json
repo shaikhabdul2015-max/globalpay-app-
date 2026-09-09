@@ -1,0 +1,7 @@
+{
+  "name": "Global Multi-Currency Payment App",
+  "description": "Multi-currency wallet for holding currencies, instant swaps, transparent cross-border transfers, and international QR merchant payments.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
