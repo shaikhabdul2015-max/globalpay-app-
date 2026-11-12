@@ -13,6 +13,12 @@ import {
   NavigationTab,
 } from '../types';
 import { SUPPORTED_CURRENCIES, DEMO_PERSONAS, PRESET_RECIPIENTS, SAMPLE_MERCHANT_QRS } from '../data/currencies';
+import {
+  buildWalletSnapshot,
+  syncWalletToBackend,
+  type BackendExecutionResult,
+  type ClientWalletSnapshot,
+} from '../services/aiWalletApi';
 
 interface PaymentContextType {
   currentUser: UserProfile;
@@ -89,6 +95,13 @@ interface PaymentContextType {
   openModal: (modal: 'swap' | 'qr_scan' | 'scan_qr' | 'send' | 'add_money' | 'receipt' | 'notifications' | 'kyc_flow' | 'auth') => void;
   closeModal: () => void;
   viewReceipt: (tx: Transaction) => void;
+
+  // Backend AI & Wallet Synchronization
+  getWalletSnapshot: () => ClientWalletSnapshot;
+  applyBackendExecution: (result: BackendExecutionResult) => void;
+  isAIChatOpen: boolean;
+  setIsAIChatOpen: (open: boolean) => void;
+  toggleAIChat: () => void;
 }
 
 const STORAGE_KEY = 'globalpay_mvp_state_v1';
@@ -332,7 +345,10 @@ const INITIAL_NOTIFICATIONS: AppNotification[] = [
   },
 ];
 
-export const PaymentProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+export const PaymentProvider: React.FC<{ children: ReactNode; initialAIChatOpen?: boolean }> = ({
+  children,
+  initialAIChatOpen = false,
+}) => {
   const [currentUser, setCurrentUser] = useState<UserProfile>(DEMO_PERSONAS.tourist);
   const [balances, setBalances] = useState<Record<CurrencyCode, WalletBalance>>(INITIAL_BALANCES);
   const [transactions, setTransactions] = useState<Transaction[]>(INITIAL_TRANSACTIONS);
@@ -347,6 +363,8 @@ export const PaymentProvider: React.FC<{ children: ReactNode }> = ({ children })
     'swap' | 'qr_scan' | 'scan_qr' | 'send' | 'add_money' | 'receipt' | 'notifications' | 'kyc_flow' | 'auth' | null
   >(null);
   const [selectedTxForReceipt, setSelectedTxForReceipt] = useState<Transaction | null>(null);
+  const [isAIChatOpen, setIsAIChatOpen] = useState<boolean>(initialAIChatOpen);
+  const toggleAIChat = () => setIsAIChatOpen((prev) => !prev);
 
   // Load from localStorage if present
   useEffect(() => {
@@ -367,7 +385,7 @@ export const PaymentProvider: React.FC<{ children: ReactNode }> = ({ children })
     }
   }, []);
 
-  // Save to localStorage on changes
+  // Save to localStorage and sync authoritative snapshot to backend on changes
   useEffect(() => {
     try {
       localStorage.setItem(
@@ -385,6 +403,18 @@ export const PaymentProvider: React.FC<{ children: ReactNode }> = ({ children })
     } catch {
       // ignore
     }
+
+    const snapshot = buildWalletSnapshot({
+      currentUser,
+      baseCurrency,
+      balances,
+      transactions,
+      ledger,
+      recipients,
+    });
+    syncWalletToBackend(snapshot).catch(() => {
+      // Keep UI resilient if backend is temporarily unreachable
+    });
   }, [currentUser, balances, transactions, ledger, recipients, notifications, baseCurrency]);
 
   const switchPersona = (personaId: string) => {
@@ -1224,6 +1254,63 @@ export const PaymentProvider: React.FC<{ children: ReactNode }> = ({ children })
     setActiveModal('receipt');
   };
 
+  const getWalletSnapshot = (): ClientWalletSnapshot => {
+    return buildWalletSnapshot({
+      currentUser,
+      baseCurrency,
+      balances,
+      transactions,
+      ledger,
+      recipients,
+    });
+  };
+
+  const applyBackendExecution = (result: BackendExecutionResult) => {
+    setBalances(result.balances);
+    setTransactions((prev) => {
+      if (prev.some((t) => t.id === result.transaction.id)) return prev;
+      return [result.transaction, ...prev];
+    });
+    setLedger((prev) => [...prev, ...result.ledgerEntries]);
+    if (result.addedRecipient) {
+      setRecipients((prev) => {
+        if (prev.some((r) => r.id === result.addedRecipient!.id)) return prev;
+        return [result.addedRecipient!, ...prev];
+      });
+    }
+
+    const tx = result.transaction;
+    const fromDef = SUPPORTED_CURRENCIES[tx.fromCurrency];
+    const toDef = SUPPORTED_CURRENCIES[tx.toCurrency];
+    const notifTitle =
+      tx.type === 'deposit'
+        ? 'Money Added via GlobalPay AI'
+        : tx.type === 'swap'
+        ? 'Currency Swap Completed'
+        : 'Transfer Completed';
+    const notifMessage =
+      tx.type === 'deposit'
+        ? `Added ${fromDef.symbol}${tx.fromAmount.toFixed(fromDef.decimals)} to your ${tx.fromCurrency} wallet.`
+        : tx.type === 'swap'
+        ? `Exchanged ${fromDef.symbol}${tx.fromAmount.toFixed(fromDef.decimals)} for ${toDef.symbol}${tx.toAmount.toFixed(
+            toDef.decimals
+          )}.`
+        : `Sent ${toDef.symbol}${tx.toAmount.toFixed(toDef.decimals)} to ${tx.recipient.name}.`;
+
+    setNotifications((prev) => [
+      {
+        id: `notif-${Date.now()}`,
+        title: notifTitle,
+        message: notifMessage,
+        type: tx.type === 'swap' ? 'swap' : tx.type === 'transfer' ? 'transfer' : 'payment',
+        timestamp: 'Just now',
+        read: false,
+        relatedTxId: tx.id,
+      },
+      ...prev,
+    ]);
+  };
+
   return (
     <PaymentContext.Provider
       value={{
@@ -1268,6 +1355,11 @@ export const PaymentProvider: React.FC<{ children: ReactNode }> = ({ children })
         openModal,
         closeModal,
         viewReceipt,
+        getWalletSnapshot,
+        applyBackendExecution,
+        isAIChatOpen,
+        setIsAIChatOpen,
+        toggleAIChat,
       }}
     >
       {children}

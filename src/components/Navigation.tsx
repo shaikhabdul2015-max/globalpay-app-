@@ -1,5 +1,5 @@
 import React from 'react';
-import { Home, Wallet, QrCode, Clock, User, ShieldAlert, Bell } from 'lucide-react';
+import { Home, Wallet, QrCode, Clock, User, ShieldAlert, Bell, Sparkles } from 'lucide-react';
 import { usePayment } from '../store/paymentContext';
 
 interface NavigationProps {
@@ -119,7 +119,13 @@ export const BottomNav: React.FC<NavigationProps> = ({
   currentTab: propTab,
   setCurrentTab: propSetTab,
 }) => {
-  const { currentTab: ctxTab, setCurrentTab: ctxSetTab, openModal } = usePayment();
+  const {
+    currentTab: ctxTab,
+    setCurrentTab: ctxSetTab,
+    openModal,
+    isAIChatOpen,
+    toggleAIChat,
+  } = usePayment();
   const currentTab = propTab || ctxTab;
   const setCurrentTab = propSetTab || ctxSetTab;
 
@@ -137,8 +143,30 @@ export const BottomNav: React.FC<NavigationProps> = ({
   ];
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 z-40 bg-slate-900/95 backdrop-blur-lg border-t border-slate-800 px-4 py-2 sm:py-2.5">
-      <div className="max-w-md mx-auto flex items-center justify-between">
+    <nav className="fixed bottom-0 left-0 right-0 z-40 bg-slate-900/95 backdrop-blur-lg border-t border-slate-800">
+      {/* Mobile AI Assistant Trigger docked inside BottomNav bar area (never overlaps currency cards) */}
+      <div className="md:hidden flex items-center justify-end px-3 pt-2 pb-1.5 border-b border-slate-800/70">
+        <button
+          type="button"
+          onClick={toggleAIChat}
+          aria-expanded={isAIChatOpen}
+          aria-label="Ask GlobalPay AI"
+          className={`min-h-[38px] px-3 py-1.5 rounded-xl border text-slate-100 flex items-center gap-2 transition-all active:scale-95 ${
+            isAIChatOpen
+              ? 'bg-emerald-500/20 border-emerald-400 text-emerald-200'
+              : 'bg-slate-800/90 hover:bg-slate-800 border-emerald-500/40'
+          }`}
+        >
+          <span className="w-5 h-5 rounded-md bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center text-slate-950 shrink-0">
+            <Sparkles className="w-3 h-3 stroke-[2.5]" />
+          </span>
+          <span className="text-xs font-bold tracking-tight whitespace-nowrap shrink-0">
+            Ask GlobalPay AI
+          </span>
+        </button>
+      </div>
+
+      <div className="max-w-md mx-auto px-4 py-2 sm:py-2.5 flex items-center justify-between">
         {navItems.map((item) => {
           const Icon = item.icon;
           const isActive = currentTab === item.id;
@@ -150,11 +178,11 @@ export const BottomNav: React.FC<NavigationProps> = ({
                 onClick={() => {
                   openModal('scan_qr');
                 }}
-                className="group relative -top-3 flex flex-col items-center focus:outline-none"
+                className="group relative top-0 md:-top-3 flex flex-col items-center focus:outline-none"
                 aria-label="Scan QR Code"
               >
-                <div className="w-13 h-13 rounded-2xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center text-slate-950 shadow-lg shadow-emerald-500/30 group-hover:scale-105 group-active:scale-95 transition-transform">
-                  <QrCode className="w-6 h-6 stroke-[2.5]" />
+                <div className="w-11 h-11 md:w-13 md:h-13 rounded-2xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center text-slate-950 shadow-lg shadow-emerald-500/30 group-hover:scale-105 group-active:scale-95 transition-transform">
+                  <QrCode className="w-5 h-5 md:w-6 md:h-6 stroke-[2.5]" />
                 </div>
                 <span className="text-[11px] font-bold text-emerald-400 mt-1">Scan QR</span>
               </button>

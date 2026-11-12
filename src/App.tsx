@@ -19,6 +19,7 @@ import { AddMoneyModal } from './components/AddMoneyModal';
 import { NotificationsModal } from './components/NotificationsModal';
 import { AuthModal } from './components/AuthModal';
 import { ReceiptModal } from './components/ReceiptModal';
+import { AIAssistantChatbox } from './components/AIAssistantChatbox';
 
 const AppContent: React.FC = () => {
   const { currentTab, setCurrentTab, activeModal, closeModal, activeReceipt, closeReceipt } =
@@ -36,7 +37,7 @@ const AppContent: React.FC = () => {
       />
 
       {/* Main Content Viewport */}
-      <main className="flex-1 w-full max-w-4xl mx-auto px-4 sm:px-6 pt-20 pb-16">
+      <main className="flex-1 w-full max-w-4xl mx-auto px-4 sm:px-6 pt-20 pb-28 md:pb-16">
         {currentTab === 'home' && <HomeScreen />}
         {currentTab === 'wallet' && <WalletScreen />}
         {currentTab === 'activity' && <ActivityScreen />}
@@ -52,6 +53,9 @@ const AppContent: React.FC = () => {
 
       {/* Bottom Nav on Mobile / Secondary Nav */}
       <BottomNav />
+
+      {/* Floating GlobalPay AI Financial Assistant */}
+      <AIAssistantChatbox />
 
       {/* Modals triggered by state */}
       {activeModal === 'swap' && <SwapModal />}
