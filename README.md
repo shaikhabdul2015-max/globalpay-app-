@@ -9,8 +9,9 @@
 ---
 
 ## 🔗 Live Links & Demo
-* **Live Application:** [https://onrender.com](https://onrender.com)
-* **Video Demonstration:** [Watch Demo on YouTube](https://youtube.com/shorts/Ji01F0skLHY)
+* **Live Application:** https://onrender.com
+* **Video Demonstration:** https://youtube.com
+* **GitHub Repository:** https://github.com/shaikhabdul2015-max/globalpay-app-
 
 ---
 
@@ -48,7 +49,7 @@ International travelers and global users often struggle with managing multiple c
 ### Installation
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com
+   git clone https://github.com/shaikhabdul2015-max/globalpay-app-
    cd globalpay-app-
    ```
 
@@ -73,7 +74,7 @@ International travelers and global users often struggle with managing multiple c
 ---
 
 ## 🧪 Testing Instructions
-1. Open the [Live App](https://onrender.com) or run locally.
+1. Open the Live App at https://onrender.com or run locally.
 2. Open the **GlobalPay AI** assistant chatbox on the main dashboard.
 3. Enter a command such as **`Add $50 to my wallet`** or **`Deposit 100 EUR`**.
 4. When the inline **PayPal Sandbox Checkout** overlay appears inside the chat, click the PayPal or Debit/Credit card button to simulate payment approval.
@@ -83,3 +84,4 @@ International travelers and global users often struggle with managing multiple c
 
 ## 📄 License
 This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
+
