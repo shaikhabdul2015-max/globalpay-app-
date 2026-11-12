@@ -95,8 +95,12 @@ export interface AIAssistantResponsePayload {
     toCurrency?: CurrencyCode;
     recipient?: string;
   };
+  intent?: string;
+  source?: 'local_intent_fast' | 'gemini_fast_model' | 'fallback_parser';
+  latencyMs?: number;
   replyText: string;
   requiresConfirmation: boolean;
+  clarificationNeeded?: boolean;
   confirmationProposal?: AIConfirmationProposal;
   balanceSummary?: AIBalanceSummaryItem[];
   conversionQuote?: AIConversionQuote;
@@ -207,13 +211,58 @@ export async function syncWalletToBackend(snapshot: ClientWalletSnapshot): Promi
 export async function sendAIMessage(
   message: string,
   history: ChatTurnPayload[],
-  snapshot: ClientWalletSnapshot
+  snapshot: ClientWalletSnapshot,
+  options?: { signal?: AbortSignal; preferLocal?: boolean }
 ): Promise<AIAssistantResponsePayload> {
   return authorizedFetch<AIAssistantResponsePayload>(
     '/api/ai/chat',
     {
       method: 'POST',
-      body: JSON.stringify({ message, history, snapshot }),
+      body: JSON.stringify({
+        message,
+        history,
+        snapshot,
+        preferLocal: options?.preferLocal,
+      }),
+      signal: options?.signal,
+    },
+    snapshot
+  );
+}
+
+export async function fetchFastIntent(
+  message: string,
+  snapshot: ClientWalletSnapshot,
+  options?: { signal?: AbortSignal }
+): Promise<{
+  intent: {
+    intent: string;
+    action: string;
+    amount?: number;
+    currency?: CurrencyCode;
+    fromCurrency?: CurrencyCode;
+    toCurrency?: CurrencyCode;
+    recipient?: string;
+    method?: 'paypal' | 'bank' | 'card';
+    requires_confirmation: boolean;
+    replyText: string;
+    confidence: number;
+    ambiguous?: boolean;
+    clarification_prompt?: string;
+  };
+  latencyMs: number;
+  response?: AIAssistantResponsePayload;
+}> {
+  return authorizedFetch<{
+    intent: any;
+    latencyMs: number;
+    response?: AIAssistantResponsePayload;
+  }>(
+    '/api/ai/intent',
+    {
+      method: 'POST',
+      body: JSON.stringify({ message, snapshot }),
+      signal: options?.signal,
     },
     snapshot
   );

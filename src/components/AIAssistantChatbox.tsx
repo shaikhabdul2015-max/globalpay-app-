@@ -328,9 +328,26 @@ export const AIAssistantChatbox: React.FC = () => {
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const activeAbortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    if (!isOpen) return;
+    return () => {
+      // Phase 3: Cancel in-flight AI requests when unmounting or switching context
+      if (activeAbortControllerRef.current) {
+        activeAbortControllerRef.current.abort();
+        activeAbortControllerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen) {
+      if (activeAbortControllerRef.current) {
+        activeAbortControllerRef.current.abort();
+        activeAbortControllerRef.current = null;
+      }
+      return;
+    }
     try {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     } catch {
@@ -351,6 +368,10 @@ export const AIAssistantChatbox: React.FC = () => {
   }, [isOpen]);
 
   useEffect(() => {
+    if (activeAbortControllerRef.current) {
+      activeAbortControllerRef.current.abort();
+      activeAbortControllerRef.current = null;
+    }
     setMessages([createWelcomeMessage()]);
     setErrorBanner(null);
     setPinInputs({});
@@ -373,6 +394,14 @@ export const AIAssistantChatbox: React.FC = () => {
     const trimmed = rawText.trim();
     if (!trimmed || isLoading) return;
 
+    // Phase 3 & 4: Cancel previous in-flight AI request if user sends a new message (context change)
+    if (activeAbortControllerRef.current) {
+      activeAbortControllerRef.current.abort();
+      activeAbortControllerRef.current = null;
+    }
+    const abortController = new AbortController();
+    activeAbortControllerRef.current = abortController;
+
     setErrorBanner(null);
     setInputValue('');
 
@@ -387,15 +416,23 @@ export const AIAssistantChatbox: React.FC = () => {
     const currentMessages = Array.isArray(messages) ? messages : [];
     const nextHistory: ChatTurnPayload[] = [...currentMessages, userMsg]
       .filter((m) => m && m.id !== 'msg-welcome')
-      .slice(-8)
+      .slice(-6)
       .map((m) => ({ role: m.role, text: typeof m.text === 'string' ? m.text : '' }));
 
     setMessages((prev) => [...(Array.isArray(prev) ? prev : []), userMsg]);
     setIsLoading(true);
 
+    const snapshot = getWalletSnapshot();
+
     try {
-      const snapshot = getWalletSnapshot();
-      const aiResponse = await sendAIMessage(trimmed, nextHistory, snapshot);
+      // Phase 3 & 4: Parallel processing with fast local intent recognition (< 50ms)
+      // Send message to backend which checks local intent instantly, with graceful cancellation
+      const aiResponse = await sendAIMessage(trimmed, nextHistory, snapshot, {
+        signal: abortController.signal,
+      });
+
+      // If aborted by user context change, do not append stale message
+      if (abortController.signal.aborted) return;
 
       const assistantMsgId = `msg-a-${Date.now()}`;
       const proposal = aiResponse?.confirmationProposal;
@@ -435,6 +472,10 @@ export const AIAssistantChatbox: React.FC = () => {
         openPayPalOverlayForProposal(assistantMsgId, proposal);
       }
     } catch (err: unknown) {
+      if (abortController.signal.aborted) {
+        // Request was cancelled intentionally by new user message or modal close
+        return;
+      }
       const msg = err instanceof Error ? err.message : 'Unable to reach GlobalPay AI right now.';
       setErrorBanner(msg);
       const errMsgId = `msg-err-${Date.now()}`;
@@ -448,7 +489,10 @@ export const AIAssistantChatbox: React.FC = () => {
         },
       ]);
     } finally {
-      setIsLoading(false);
+      if (activeAbortControllerRef.current === abortController) {
+        activeAbortControllerRef.current = null;
+        setIsLoading(false);
+      }
     }
   };
 
@@ -981,6 +1025,20 @@ export const AIAssistantChatbox: React.FC = () => {
                           {payload.conversionQuote.fromSymbol}
                           {payload.conversionQuote.swapFee.toFixed(2)}{' '}
                           {payload.conversionQuote.fromCurrency}
+                        </span>
+                      </div>
+                      <div className="pt-1 border-t border-slate-800/80 flex items-center justify-between text-[10px] text-slate-500">
+                        <span>
+                          {payload.conversionQuote.source || 'GlobalPay Real-Time FX Feed'}
+                        </span>
+                        <span>
+                          {payload.conversionQuote.rateTimestamp
+                            ? new Date(payload.conversionQuote.rateTimestamp).toLocaleTimeString([], {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                                second: '2-digit',
+                              })
+                            : 'Live'}
                         </span>
                       </div>
                     </div>

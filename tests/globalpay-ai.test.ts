@@ -14,6 +14,8 @@ import {
   parseNaturalCommandFallback,
   validateAndNormalizeParsedCommand,
 } from '../server/aiAssistant.ts';
+import { parseLocalIntent } from '../server/localIntentParser.ts';
+import { getCachedExchangeRate } from '../server/walletEngine.ts';
 import type { WalletSnapshot } from '../server/types.ts';
 
 function makeTestSnapshot(): WalletSnapshot {
@@ -464,5 +466,371 @@ test('PayPal AI Hackathon: add_money commands return PayPal Sandbox proposal and
     await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
   }
 });
+
+test('Phase 2: Local Intent Recognition handles all 9 financial intent types plus ambiguities', () => {
+  // 1. send_money
+  const sendRes = parseLocalIntent('Send $75 to Marco', 'USD');
+  assert.equal(sendRes.intent, 'send_money');
+  assert.equal(sendRes.amount, 75);
+  assert.equal(sendRes.currency, 'USD');
+  assert.equal(sendRes.recipient, 'Marco');
+  assert.equal(sendRes.requires_confirmation, true);
+
+  // 2. receive_money
+  const recvRes = parseLocalIntent('How do I receive EUR funds?', 'EUR');
+  assert.equal(recvRes.intent, 'receive_money');
+  assert.equal(recvRes.currency, 'EUR');
+  assert.equal(recvRes.requires_confirmation, false);
+  assert.ok(recvRes.replyText.includes('IBAN'));
+
+  // 3. check_balance
+  const balRes = parseLocalIntent('What is my current GBP balance?', 'USD');
+  assert.equal(balRes.intent, 'check_balance');
+  assert.equal(balRes.currency, 'GBP');
+  assert.equal(balRes.requires_confirmation, false);
+
+  // 4. transaction_history
+  const txRes = parseLocalIntent('Show my recent spending and history', 'USD');
+  assert.equal(txRes.intent, 'transaction_history');
+  assert.equal(txRes.requires_confirmation, false);
+
+  // 5. currency_conversion (swap)
+  const swapRes = parseLocalIntent('Swap 150 USD to EUR', 'USD');
+  assert.equal(swapRes.intent, 'currency_conversion');
+  assert.equal(swapRes.amount, 150);
+  assert.equal(swapRes.fromCurrency, 'USD');
+  assert.equal(swapRes.toCurrency, 'EUR');
+  assert.equal(swapRes.requires_confirmation, true);
+
+  // 6. fx_rate_lookup
+  const fxRes = parseLocalIntent("What's the exchange rate between USD and INR?", 'USD');
+  assert.equal(fxRes.intent, 'fx_rate_lookup');
+  assert.equal(fxRes.fromCurrency, 'USD');
+  assert.equal(fxRes.toCurrency, 'INR');
+  assert.equal(fxRes.requires_confirmation, false);
+
+  // 7. deposit_funds
+  const depRes = parseLocalIntent('Deposit $250 via PayPal', 'USD');
+  assert.equal(depRes.intent, 'deposit_funds');
+  assert.equal(depRes.amount, 250);
+  assert.equal(depRes.currency, 'USD');
+  assert.equal(depRes.requires_confirmation, true);
+
+  // 8. withdraw_funds
+  const withRes = parseLocalIntent('Withdraw $100 to my bank', 'USD');
+  assert.equal(withRes.intent, 'withdraw_funds');
+  assert.equal(withRes.amount, 100);
+  assert.equal(withRes.requires_confirmation, false);
+
+  // 9. payment_status
+  const statRes = parseLocalIntent('What is the status of TX-100001?', 'USD');
+  assert.equal(statRes.intent, 'payment_status');
+  assert.equal(statRes.requires_confirmation, false);
+  assert.ok(statRes.replyText.includes('TX-100001'));
+
+  // Ambiguous command handling: "Send money" without amount or recipient asks for clarification
+  const ambigSend = parseLocalIntent('Send money', 'USD');
+  assert.equal(ambigSend.intent, 'send_money');
+  assert.equal(ambigSend.ambiguous, true);
+  assert.equal(ambigSend.requires_confirmation, false);
+  assert.ok(ambigSend.clarification_prompt?.length);
+
+  // Ambiguous deposit: "Deposit" without amount asks for clarification
+  const ambigDeposit = parseLocalIntent('Deposit', 'USD');
+  assert.equal(ambigDeposit.intent, 'deposit_funds');
+  assert.equal(ambigDeposit.ambiguous, true);
+  assert.equal(ambigDeposit.requires_confirmation, false);
+  assert.ok(ambigDeposit.clarification_prompt?.length);
+});
+
+test('Phase 9: Comprehensive validation of the 7 required test commands', async () => {
+  const snapshot = makeTestSnapshot();
+  const app = await createApp();
+  const server = http.createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+
+  try {
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Invalid server address');
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const sessionRes = await fetch(`${baseUrl}/api/auth/session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshot }),
+    });
+    const { token } = (await sessionRes.json()) as { token: string };
+
+    // Command 1: "Send $50 to Marco"
+    const c1Res = await fetch(`${baseUrl}/api/ai/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ message: 'Send $50 to Marco', history: [], snapshot }),
+    });
+    assert.equal(c1Res.status, 200);
+    const c1Json = (await c1Res.json()) as {
+      intent: string;
+      requiresConfirmation: boolean;
+      confirmationProposal?: { recipientName: string; amount: number; currency: string; recipientId?: string };
+    };
+    assert.equal(c1Json.intent, 'send_money');
+    assert.equal(c1Json.requiresConfirmation, true);
+    assert.equal(c1Json.confirmationProposal?.amount, 50);
+    assert.equal(c1Json.confirmationProposal?.currency, 'USD');
+    assert.equal(c1Json.confirmationProposal?.recipientName, 'Marco Rossi');
+    assert.equal(c1Json.confirmationProposal?.recipientId, 'rec-1');
+
+    // Command 2: "What's my balance?"
+    const c2Res = await fetch(`${baseUrl}/api/ai/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ message: "What's my balance?", history: [], snapshot }),
+    });
+    assert.equal(c2Res.status, 200);
+    const c2Json = (await c2Res.json()) as {
+      intent: string;
+      requiresConfirmation: boolean;
+      balanceSummary?: Array<{ currency: string; available: number }>;
+    };
+    assert.equal(c2Json.intent, 'check_balance');
+    assert.equal(c2Json.requiresConfirmation, false);
+    assert.ok(c2Json.balanceSummary && c2Json.balanceSummary.length >= 4);
+    assert.ok(c2Json.balanceSummary.some((b) => b.currency === 'USD' && b.available === 1250));
+
+    // Command 3: "Convert 100 USD to EUR"
+    const c3Res = await fetch(`${baseUrl}/api/ai/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ message: 'Convert 100 USD to EUR', history: [], snapshot }),
+    });
+    assert.equal(c3Res.status, 200);
+    const c3Json = (await c3Res.json()) as {
+      intent: string;
+      conversionQuote?: { fromAmount: number; fromCurrency: string; toCurrency: string; toAmount: number; rateTimestamp?: string };
+    };
+    assert.equal(c3Json.intent, 'currency_conversion');
+    assert.equal(c3Json.conversionQuote?.fromAmount, 100);
+    assert.equal(c3Json.conversionQuote?.fromCurrency, 'USD');
+    assert.equal(c3Json.conversionQuote?.toCurrency, 'EUR');
+    assert.equal(c3Json.conversionQuote?.toAmount, 91.2);
+    assert.ok(c3Json.conversionQuote?.rateTimestamp);
+
+    // Command 4: "Show my recent transactions"
+    const c4Res = await fetch(`${baseUrl}/api/ai/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ message: 'Show my recent transactions', history: [], snapshot }),
+    });
+    assert.equal(c4Res.status, 200);
+    const c4Json = (await c4Res.json()) as {
+      intent: string;
+      requiresConfirmation: boolean;
+      recentTransactions?: Array<{ id: string }>;
+    };
+    assert.equal(c4Json.intent, 'transaction_history');
+    assert.equal(c4Json.requiresConfirmation, false);
+    assert.ok(c4Json.recentTransactions && c4Json.recentTransactions.length > 0);
+
+    // Command 5: "Deposit $200"
+    const c5Res = await fetch(`${baseUrl}/api/ai/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ message: 'Deposit $200', history: [], snapshot }),
+    });
+    assert.equal(c5Res.status, 200);
+    const c5Json = (await c5Res.json()) as {
+      intent: string;
+      requiresConfirmation: boolean;
+      confirmationProposal?: { action: string; amount: number; currency: string; method?: string };
+    };
+    assert.equal(c5Json.intent, 'deposit_funds');
+    assert.equal(c5Json.requiresConfirmation, true);
+    assert.equal(c5Json.confirmationProposal?.action, 'add_money');
+    assert.equal(c5Json.confirmationProposal?.amount, 200);
+    assert.equal(c5Json.confirmationProposal?.currency, 'USD');
+    assert.equal(c5Json.confirmationProposal?.method, 'paypal');
+
+    // Command 6: "What's the USD to INR rate?"
+    const c6Res = await fetch(`${baseUrl}/api/ai/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ message: "What's the USD to INR rate?", history: [], snapshot }),
+    });
+    assert.equal(c6Res.status, 200);
+    const c6Json = (await c6Res.json()) as {
+      intent: string;
+      conversionQuote?: { fromCurrency: string; toCurrency: string; rate: number; source?: string; rateTimestamp?: string };
+    };
+    assert.equal(c6Json.intent, 'fx_rate_lookup');
+    assert.equal(c6Json.conversionQuote?.fromCurrency, 'USD');
+    assert.equal(c6Json.conversionQuote?.toCurrency, 'INR');
+    assert.equal(c6Json.conversionQuote?.rate, 85.34);
+    assert.ok(c6Json.conversionQuote?.source?.includes('GlobalPay Real-Time FX Feed'));
+    assert.ok(c6Json.conversionQuote?.rateTimestamp);
+
+    // Command 7: "Send money to John" (ambiguous: missing amount, recipient unknown in address book)
+    const c7Res = await fetch(`${baseUrl}/api/ai/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ message: 'Send money to John', history: [], snapshot }),
+    });
+    assert.equal(c7Res.status, 200);
+    const c7Json = (await c7Res.json()) as {
+      intent: string;
+      clarificationNeeded?: boolean;
+      replyText: string;
+    };
+    assert.equal(c7Json.intent, 'send_money');
+    assert.ok(
+      c7Json.clarificationNeeded ||
+        c7Json.replyText.toLowerCase().includes('specify the amount') ||
+        c7Json.replyText.toLowerCase().includes('how much')
+    );
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+  }
+});
+
+test('Phase 8: Micro-benchmarking confirms ultra-low latency & cached FX accuracy', async () => {
+  // Benchmark 1: Local intent parser executes 1,000 iterations in < 50ms total (< 0.05ms per call)
+  const testPhrases = [
+    'Send $50 to Marco',
+    "What's my balance?",
+    'Convert 100 USD to EUR',
+    'Deposit $200 via PayPal',
+    "What's the USD to INR rate?",
+    'Show my recent transactions',
+    'How do I receive EUR?',
+    'Withdraw $50',
+    'Status of TX-100001',
+    'Send money to John',
+  ];
+
+  const t0 = performance.now();
+  for (let i = 0; i < 1000; i++) {
+    const phrase = testPhrases[i % testPhrases.length];
+    const parsed = parseLocalIntent(phrase, 'USD');
+    assert.ok(parsed.intent);
+  }
+  const totalIntentTimeMs = performance.now() - t0;
+  const avgIntentTimeMs = totalIntentTimeMs / 1000;
+
+  // Verify latency is well below 50ms target (typically < 0.05ms per execution)
+  assert.ok(avgIntentTimeMs < 1.0, `Expected avg local intent < 1ms, got ${avgIntentTimeMs.toFixed(3)}ms`);
+  assert.ok(totalIntentTimeMs < 50.0, `Expected 1000 iterations < 50ms, got ${totalIntentTimeMs.toFixed(2)}ms`);
+
+  // Benchmark 2: Cached FX Rate retrieval with TTL and timestamp
+  const fx0 = performance.now();
+  const cached1 = getCachedExchangeRate('USD', 'INR');
+  const cached2 = getCachedExchangeRate('USD', 'INR');
+  const fxDuration = performance.now() - fx0;
+
+  assert.equal(cached1.rate, 85.34);
+  assert.equal(cached2.rate, 85.34);
+  assert.ok(cached1.timestamp);
+  assert.ok(cached1.source.includes('GlobalPay Real-Time FX Feed'));
+  assert.ok(fxDuration < 5.0, `Expected cached FX retrieval < 5ms, got ${fxDuration.toFixed(3)}ms`);
+
+  // Benchmark 3: Fast `/api/ai/intent` HTTP endpoint roundtrip < 50ms
+  const snapshot = makeTestSnapshot();
+  const app = await createApp();
+  const server = http.createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+
+  try {
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Invalid server address');
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const sessionRes = await fetch(`${baseUrl}/api/auth/session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshot }),
+    });
+    const { token } = (await sessionRes.json()) as { token: string };
+
+    const httpT0 = performance.now();
+    const intentRes = await fetch(`${baseUrl}/api/ai/intent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ message: 'Send $50 to Marco', defaultCurrency: 'USD' }),
+    });
+    const httpDuration = performance.now() - httpT0;
+
+    assert.equal(intentRes.status, 200);
+    const intentData = (await intentRes.json()) as { intent: { intent: string }; latencyMs?: number };
+    assert.equal(intentData.intent.intent, 'send_money');
+    assert.ok(httpDuration < 100.0, `Expected endpoint roundtrip < 100ms, got ${httpDuration.toFixed(2)}ms`);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+  }
+});
+
+test('Phase 5: Financial Security invariants strictly enforced (no direct AI debit)', async () => {
+  const snapshot = makeTestSnapshot();
+  const initialUsd = snapshot.balances.USD.available;
+
+  const app = await createApp();
+  const server = http.createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+
+  try {
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Invalid server address');
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const sessionRes = await fetch(`${baseUrl}/api/auth/session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshot }),
+    });
+    const { token } = (await sessionRes.json()) as { token: string };
+
+    // 1. Asking AI to send money MUST NEVER debit balance directly
+    const chatRes = await fetch(`${baseUrl}/api/ai/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ message: 'Send $50 to Marco', history: [], snapshot }),
+    });
+    assert.equal(chatRes.status, 200);
+    const chatData = (await chatRes.json()) as { requiresConfirmation: boolean };
+    assert.equal(chatData.requiresConfirmation, true);
+
+    // Verify wallet balance is completely unchanged
+    const walletStateRes = await fetch(`${baseUrl}/api/wallet/state`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const walletState = (await walletStateRes.json()) as { balances: Record<string, { available: number }> };
+    assert.equal(walletState.balances.USD.available, initialUsd);
+
+    // 2. Reject balance over-drafting on transfer endpoint
+    const overdraftRes = await fetch(`${baseUrl}/api/wallet/transfer`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+        'Idempotency-Key': 'idem-overdraft-test',
+      },
+      body: JSON.stringify({
+        recipientId: 'rec-1',
+        fromCurrency: 'USD',
+        amount: 999999, // exceeds available balance
+        pin: '1234',
+      }),
+    });
+    assert.equal(overdraftRes.status, 400);
+    const overdraftData = (await overdraftRes.json()) as { error: string };
+    assert.ok(overdraftData.error.toLowerCase().includes('insufficient'));
+
+    // Balance still intact
+    const verifyState = await (
+      await fetch(`${baseUrl}/api/wallet/state`, { headers: { Authorization: `Bearer ${token}` } })
+    ).json() as { balances: Record<string, { available: number }> };
+    assert.equal(verifyState.balances.USD.available, initialUsd);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+  }
+});
+
 
 

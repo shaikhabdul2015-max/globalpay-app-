@@ -12,6 +12,7 @@ import type {
 import {
   calculateSwapQuote,
   calculateTransferQuote,
+  getCachedExchangeRate,
   getExchangeRate,
   resolveRecipientMatch,
 } from './walletEngine.ts';
@@ -98,8 +99,12 @@ export interface AIAssistantResponse {
     toCurrency?: CurrencyCode;
     recipient?: string;
   };
+  intent?: string;
+  source?: 'local_intent_fast' | 'gemini_fast_model' | 'fallback_parser';
+  latencyMs?: number;
   replyText: string;
   requiresConfirmation: boolean;
+  clarificationNeeded?: boolean;
   confirmationProposal?: ConfirmationProposal;
   balanceSummary?: Array<{
     currency: CurrencyCode;
@@ -119,6 +124,8 @@ export interface AIAssistantResponse {
     swapFee: number;
     fromSymbol: string;
     toSymbol: string;
+    rateTimestamp?: string;
+    source?: string;
   };
   recentTransactions?: Transaction[];
 }
@@ -312,6 +319,7 @@ export async function processAIChatCommand(params: {
   history: ChatTurn[];
   wallet: WalletSnapshot;
 }): Promise<AIAssistantResponse> {
+  const startTime = Date.now();
   const ai = getGeminiClient();
 
   const recipientNames = params.wallet.recipients
@@ -319,7 +327,7 @@ export async function processAIChatCommand(params: {
     .join(', ');
 
   const historyContext = params.history
-    .slice(-6)
+    .slice(-4)
     .map((turn) => `${turn.role === 'user' ? 'User' : 'Assistant'}: ${turn.text}`)
     .join('\n');
 
@@ -332,13 +340,16 @@ export async function processAIChatCommand(params: {
     .filter(Boolean)
     .join('\n\n');
 
+  // Phase 1: Fast AI Model Configuration using gemini-2.5-flash with zero thinking budget for ultra-low latency
   const response = await callGeminiWithRetry(() =>
     ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+      model: 'gemini-2.5-flash',
       contents: prompt,
       config: {
         systemInstruction: SYSTEM_INSTRUCTION,
         responseMimeType: 'application/json',
+        maxOutputTokens: 500,
+        thinkingConfig: { thinkingBudget: 0 },
         responseSchema: {
           type: Type.OBJECT,
           properties: {
@@ -385,7 +396,7 @@ export async function processAIChatCommand(params: {
             },
             replyText: {
               type: Type.STRING,
-              description: 'Concise, helpful assistant message to display to the user',
+              description: 'Concise, ultra-fast financial assistant reply to display to the user',
             },
           },
           required: ['action', 'replyText'],
@@ -406,7 +417,10 @@ export async function processAIChatCommand(params: {
   }
 
   const parsed = validateAndNormalizeParsedCommand(parsedRaw, params.wallet.user.baseCurrency);
-  return buildVerifiedAssistantResponse(parsed, params.wallet);
+  const result = buildVerifiedAssistantResponse(parsed, params.wallet);
+  result.source = 'gemini_fast_model';
+  result.latencyMs = Date.now() - startTime;
+  return result;
 }
 
 export function buildVerifiedAssistantResponse(
@@ -470,7 +484,8 @@ export function buildVerifiedAssistantResponse(
   if (parsed.action === 'convert_quote' && parsed.fromCurrency && parsed.toCurrency && parsed.amount) {
     const fromDef = SUPPORTED_CURRENCIES[parsed.fromCurrency];
     const toDef = SUPPORTED_CURRENCIES[parsed.toCurrency];
-    const rate = parseFloat(getExchangeRate(parsed.fromCurrency, parsed.toCurrency).toFixed(4));
+    const cachedRateEntry = getCachedExchangeRate(parsed.fromCurrency, parsed.toCurrency);
+    const rate = parseFloat(cachedRateEntry.rate.toFixed(4));
     const quote = calculateSwapQuote(parsed.fromCurrency, parsed.toCurrency, parsed.amount);
 
     return {
@@ -480,6 +495,7 @@ export function buildVerifiedAssistantResponse(
         fromCurrency: parsed.fromCurrency,
         toCurrency: parsed.toCurrency,
       },
+      intent: 'currency_conversion',
       replyText: `${fromDef.symbol}${parsed.amount.toFixed(fromDef.decimals)} ${parsed.fromCurrency} converts to ${
         toDef.symbol
       }${quote.toAmount.toLocaleString(undefined, {
@@ -496,6 +512,8 @@ export function buildVerifiedAssistantResponse(
         swapFee: quote.fee.totalFee,
         fromSymbol: fromDef.symbol,
         toSymbol: toDef.symbol,
+        rateTimestamp: cachedRateEntry.timestamp,
+        source: cachedRateEntry.source,
       },
     };
   }
@@ -684,6 +702,7 @@ export function buildVerifiedAssistantResponse(
     parsedCommand: { action: 'general_chat' },
     replyText: parsed.replyText,
     requiresConfirmation: false,
+    clarificationNeeded: Boolean(parsed.clarificationNeeded),
   };
 }
 

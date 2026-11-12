@@ -23,6 +23,43 @@ export function getWalletSnapshot(userId: string): WalletSnapshot | null {
   return walletStore.get(userId) ?? null;
 }
 
+export interface CachedRateEntry {
+  rate: number;
+  timestamp: string;
+  source: string;
+}
+
+const fxCache = new Map<string, { rate: number; timestamp: string; expiresAt: number }>();
+const FX_CACHE_TTL_MS = 60_000; // 60s short-lived cache for market quote stability
+
+export function getCachedExchangeRate(from: CurrencyCode, to: CurrencyCode): CachedRateEntry {
+  const now = Date.now();
+  const cacheKey = `${from}_${to}`;
+  const cached = fxCache.get(cacheKey);
+
+  if (cached && cached.expiresAt > now) {
+    return {
+      rate: cached.rate,
+      timestamp: cached.timestamp,
+      source: 'GlobalPay Real-Time FX Feed (Cached)',
+    };
+  }
+
+  const rate = getExchangeRate(from, to);
+  const timestamp = new Date().toISOString();
+  fxCache.set(cacheKey, {
+    rate,
+    timestamp,
+    expiresAt: now + FX_CACHE_TTL_MS,
+  });
+
+  return {
+    rate,
+    timestamp,
+    source: 'GlobalPay Real-Time FX Feed',
+  };
+}
+
 export function getExchangeRate(from: CurrencyCode, to: CurrencyCode): number {
   if (from === to) return 1.0;
   const fromDef = SUPPORTED_CURRENCIES[from];

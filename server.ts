@@ -10,7 +10,9 @@ import {
   parseNaturalCommandFallback,
   processAIChatCommand,
   transcribeAudioCommand,
+  type AIAssistantResponse,
 } from './server/aiAssistant.ts';
+import { parseLocalIntent } from './server/localIntentParser.ts';
 import { SUPPORTED_CURRENCIES } from './server/currencies.ts';
 import {
   attachRequestContext,
@@ -448,13 +450,81 @@ export async function createApp() {
     res.json({ logs });
   });
 
+  // Fast Local Intent Recognition Endpoint (Ultra low latency: < 50ms)
+  app.post('/api/ai/intent', requireAuth, aiRateLimiter, (req: AuthenticatedRequest, res) => {
+    const t0 = Date.now();
+    const userId = req.auth!.sub;
+    const body = req.body as {
+      message?: unknown;
+      snapshot?: WalletSnapshot;
+    };
+
+    const message = sanitizeText(body?.message, 1000);
+    if (!message) {
+      res.status(400).json({ error: 'Message is required.' });
+      return;
+    }
+
+    if (body?.snapshot && body.snapshot.balances) {
+      syncWalletSnapshot(userId, body.snapshot);
+    }
+
+    const wallet = getWalletSnapshot(userId);
+    const baseCurrency = wallet?.user.baseCurrency || 'USD';
+    const intentResult = parseLocalIntent(message, baseCurrency);
+    const latencyMs = Date.now() - t0;
+
+    let assistantResponse: AIAssistantResponse | undefined;
+    if (wallet && intentResult.confidence >= 0.8 && !intentResult.ambiguous) {
+      assistantResponse = buildVerifiedAssistantResponse(
+        {
+          action: intentResult.action,
+          amount: intentResult.amount,
+          currency: intentResult.currency,
+          fromCurrency: intentResult.fromCurrency,
+          toCurrency: intentResult.toCurrency,
+          recipient: intentResult.recipient,
+          method: intentResult.method,
+          limit: intentResult.limit,
+          replyText: intentResult.replyText,
+        },
+        wallet
+      );
+      assistantResponse.intent = intentResult.intent;
+      assistantResponse.source = 'local_intent_fast';
+      assistantResponse.latencyMs = latencyMs;
+    }
+
+    logAuditEvent({
+      requestId: req.requestId || 'unknown',
+      userId,
+      action: `LOCAL_INTENT_RECOGNIZED:${intentResult.intent}`,
+      status: 'success',
+      details: {
+        intent: intentResult.intent,
+        confidence: intentResult.confidence,
+        latencyMs,
+        requiresConfirmation: intentResult.requires_confirmation,
+      },
+      ip: req.ip,
+    });
+
+    res.json({
+      intent: intentResult,
+      latencyMs,
+      response: assistantResponse,
+    });
+  });
+
   // Gemini AI Financial Assistant Endpoint (Parse + Authoritative Read Queries Only)
   app.post('/api/ai/chat', requireAuth, aiRateLimiter, async (req: AuthenticatedRequest, res) => {
+    const t0 = Date.now();
     const userId = req.auth!.sub;
     const body = req.body as {
       message?: unknown;
       history?: Array<{ role?: unknown; text?: unknown }>;
       snapshot?: WalletSnapshot;
+      preferLocal?: boolean;
     };
 
     const message = sanitizeText(body?.message, 1000);
@@ -473,13 +543,58 @@ export async function createApp() {
       return;
     }
 
+    // Phase 2 & 3: Evaluate local intent immediately (low latency execution)
+    const localIntent = parseLocalIntent(message, wallet.user.baseCurrency);
+    const hasHighConfidenceLocal =
+      localIntent.confidence >= 0.95 &&
+      !localIntent.ambiguous &&
+      localIntent.action !== 'general_chat';
+
+    // If local intent is decisive for core commands (send, add_money, swap, check_balance, quote, tx_history)
+    if (hasHighConfidenceLocal || body?.preferLocal) {
+      const localResponse = buildVerifiedAssistantResponse(
+        {
+          action: localIntent.action,
+          amount: localIntent.amount,
+          currency: localIntent.currency,
+          fromCurrency: localIntent.fromCurrency,
+          toCurrency: localIntent.toCurrency,
+          recipient: localIntent.recipient,
+          method: localIntent.method,
+          limit: localIntent.limit,
+          replyText: localIntent.replyText,
+        },
+        wallet
+      );
+      localResponse.intent = localIntent.intent;
+      localResponse.source = 'local_intent_fast';
+      localResponse.latencyMs = Date.now() - t0;
+
+      logAuditEvent({
+        requestId: req.requestId || 'unknown',
+        userId,
+        action: `FAST_LOCAL_INTENT_SERVED:${localIntent.intent}`,
+        status: 'success',
+        details: {
+          intent: localIntent.intent,
+          latencyMs: localResponse.latencyMs,
+          amount: localIntent.amount,
+          currency: localIntent.currency,
+        },
+        ip: req.ip,
+      });
+
+      res.json(localResponse);
+      return;
+    }
+
     const sanitizedHistory = Array.isArray(body?.history)
       ? body.history
           .filter(
             (h): h is { role: 'user' | 'assistant'; text: string } =>
               (h?.role === 'user' || h?.role === 'assistant') && typeof h?.text === 'string'
           )
-          .slice(-8)
+          .slice(-6)
           .map((h) => ({ role: h.role, text: sanitizeText(h.text, 500) }))
       : [];
 
@@ -489,6 +604,7 @@ export async function createApp() {
         history: sanitizedHistory,
         wallet,
       });
+      assistantResponse.intent = localIntent.intent;
 
       logAuditEvent({
         requestId: req.requestId || 'unknown',
@@ -499,6 +615,7 @@ export async function createApp() {
           requiresConfirmation: assistantResponse.requiresConfirmation,
           currency: assistantResponse.parsedCommand.currency || assistantResponse.parsedCommand.fromCurrency,
           amount: assistantResponse.parsedCommand.amount,
+          latencyMs: assistantResponse.latencyMs,
         },
         ip: req.ip,
       });
@@ -508,6 +625,10 @@ export async function createApp() {
       if (err instanceof GeminiConfigurationError) {
         const fallbackParsed = parseNaturalCommandFallback(message, wallet.user.baseCurrency);
         const fallbackResponse = buildVerifiedAssistantResponse(fallbackParsed, wallet);
+        fallbackResponse.intent = localIntent.intent;
+        fallbackResponse.source = 'fallback_parser';
+        fallbackResponse.latencyMs = Date.now() - t0;
+
         logAuditEvent({
           requestId: req.requestId || 'unknown',
           userId,
@@ -517,6 +638,7 @@ export async function createApp() {
             reason: 'gemini_unconfigured_fallback',
             currency: fallbackResponse.parsedCommand.currency || fallbackResponse.parsedCommand.fromCurrency,
             amount: fallbackResponse.parsedCommand.amount,
+            latencyMs: fallbackResponse.latencyMs,
           },
           ip: req.ip,
         });
@@ -524,19 +646,24 @@ export async function createApp() {
         return;
       }
 
-      const messageText = err instanceof Error ? err.message : 'AI service temporarily unavailable.';
+      // Phase 7: Model failure fallback to local intent parser for resilience
+      const fallbackParsed = parseNaturalCommandFallback(message, wallet.user.baseCurrency);
+      const fallbackResponse = buildVerifiedAssistantResponse(fallbackParsed, wallet);
+      fallbackResponse.intent = localIntent.intent;
+      fallbackResponse.source = 'fallback_parser';
+      fallbackResponse.latencyMs = Date.now() - t0;
+
+      const messageText = err instanceof Error ? err.message : 'AI service fallback engaged.';
       logAuditEvent({
         requestId: req.requestId || 'unknown',
         userId,
-        action: 'AI_CHAT_ERROR',
+        action: 'AI_CHAT_ERROR_FALLBACK',
         status: 'error',
-        details: { reason: messageText },
+        details: { reason: messageText, fallbackAction: fallbackResponse.parsedCommand.action },
         ip: req.ip,
       });
 
-      res.status(502).json({
-        error: 'GlobalPay AI encountered a temporary issue processing your request. Please try again.',
-      });
+      res.json(fallbackResponse);
     }
   });
 
@@ -609,7 +736,7 @@ export async function createApp() {
 const isEntrypoint = process.argv[1] && path.resolve(process.argv[1]) === __filename;
 
 if (isEntrypoint) {
-  const PORT = Number(process.env.PORT || 3000);
+  const PORT = Number(process.env.APP_PORT || 3000);
   createApp()
     .then((app) => {
       app.listen(PORT, '0.0.0.0', () => {
