@@ -1,53 +1,85 @@
-# GlobalPay AI — Multi-Currency Wallet with Intelligent PayPal Agent
+# 🌍 GlobalPay AI
 
-GlobalPay AI is a next-generation multi-currency financial platform designed for freelancers, expats, and cross-border digital nomads. It bridges the gap between natural language AI interactions and secure financial transaction rails via the PayPal Sandbox ecosystem.
+**An AI-powered cross-border payment and live FX wallet assistant that simplifies global money transfers through natural chat.**
 
-## 🚀 Live Demo & Deployment
-- **Live URL:** [Paste your Render Live URL here]
-- **Demo Video:** [Paste your YouTube 3-min Video Link here]
+[![License: MIT](https://shields.io)](https://opensource.org)
+[![Built with Google Gemini](https://shields.io)](https://google.com)
+[![Powered by PayPal](https://shields.io)](https://paypal.com)
 
-## 💡 The Problem
-Managing money across borders is rigid and fragmented. International users lose time calculating conversions, toggling between exchange charts, and filling out complex transaction forms just to execute basic deposits or payouts. 
+---
 
-## ✨ Our Solution: The AI Financial Agent
-GlobalPay AI introduces a unified conversational agent **"Ask GlobalPay AI"** that intercepts user intents and securely triggers precise financial operations.
-- **Natural Language Parsing:** Users can type plain instructions like *"Add \$50 using PayPal"* or *"Deposit 100 USD"*.
-- **Deterministic Backend Control:** The AI handles the interpretation, but our robust Express backend completely controls the actual financial ledger.
-- **Seamless PayPal Integration:** Integrates dynamically with the **PayPal Sandbox Checkout ecosystem** right inside the conversational layer.
+## 🔗 Live Links & Demo
+* **Live Application:** [https://onrender.com](https://onrender.com)
+* **Video Demonstration:** [Watch Demo on YouTube](https://youtube.com/shorts/Ji01F0skLHY)
 
-## ⚙️ Core Technical Architecture
-1. **Frontend:** React with fluid Tailwind CSS modules tailored for clean multi-currency portfolio states (USD, EUR, GBP, INR, AED).
-2. **Backend Execution:** Node.js + Express server hosting strict validation boundaries.
-3. **AI Parsing Core:** Built using LLM structured JSON output rules to reliably transform natural inputs into actionable API payloads without giving the LLM independent ledger authorization.
-4. **Payment Gateway:** Native integration simulation using **PayPal REST APIs / Sandbox SDKs** to execute instant top-ups.
+---
 
-## 📁 Repository Structure
-```text
-globalpay-app/
-├── src/
-│   ├── ai/          # Command parser logic & system prompts
-│   ├── payments/    # PayPal Sandbox API connections
-│   └── components/  # React Chatbot & Currency Card viewports
-└── server.js        # Main Express engine
-```
+## 📖 Overview
+International travelers and global users often struggle with managing multiple currencies, tracking real-time foreign exchange (FX) rates, and dealing with complex cross-border payment interfaces. **GlobalPay AI** solves this by combining a multi-currency digital wallet with an intelligent conversational AI assistant—making global money management as easy as sending a text message.
 
-## 🛠️ Setup & Installation
-1. Clone the repository:
+---
+
+## ✨ Key Features
+* **Multi-Currency Portfolio:** View and manage balances across major global currencies (**USD, EUR, GBP, INR, AED**) with real-time mid-market FX conversions.
+* **Conversational AI Commands:** Use natural language in the chatbox (e.g., *"Add $50 to my wallet"*, *"Deposit 100 EUR"*, or *"Send $50 to Marco"*) to execute financial actions instantly.
+* **Inline PayPal Sandbox Checkout:** Launches an interactive PayPal checkout overlay directly inside the chat window—supporting PayPal balance and Debit/Credit card funding without popup blockers.
+* **Hybrid Intent Parser:** Pairs **Google Gemini AI** with a deterministic backend fallback parser (`parseNaturalCommandFallback`) to guarantee reliable command execution in all environments.
+* **Instant Ledger & Receipt Tracking:** Automatically verifies top-ups via `/api/wallet/topup`, updates dashboard balances in real time, and generates digital receipts with PayPal order references.
+
+---
+
+## 🛠️ Tech Stack
+* **Frontend:** React, TypeScript, Tailwind CSS
+* **Backend:** Node.js, Express
+* **AI & NLP:** Google Gemini API (built via Google AI Studio)
+* **Payments:** PayPal Checkout / PayPal Sandbox API
+* **Deployment & Testing:** Render, Vitest (`globalpay-ai.test.ts`)
+
+---
+
+## 🚀 Getting Started (Local Setup)
+
+### Prerequisites
+* Node.js (v18+ recommended)
+* npm or yarn
+* Google Gemini API Key (optional—includes deterministic fallback parser for testing)
+* PayPal Sandbox Client ID
+
+### Installation
+1. **Clone the repository:**
    ```bash
    git clone https://github.com
+   cd globalpay-app-
    ```
-2. Install dependencies:
+
+2. **Install dependencies:**
    ```bash
    npm install
    ```
-3. Configure your `.env` variables:
+
+3. **Configure environment variables:**
+   Create a `.env` file in the root directory and add your keys:
    ```env
-   OPENAI_API_KEY=your_openai_or_gemini_key
-   PAYPAL_CLIENT_ID=your_sandbox_client_id
-   PAYPAL_CLIENT_SECRET=your_sandbox_secret
-   PAYPAL_BASE_URL=https://paypal.com
+   GEMINI_API_KEY=your_google_gemini_api_key
+   PAYPAL_CLIENT_ID=your_paypal_sandbox_client_id
+   PAYPAL_CLIENT_SECRET=your_paypal_sandbox_client_secret
    ```
-4. Run the local environment:
+
+4. **Run the application:**
    ```bash
    npm run dev
    ```
+
+---
+
+## 🧪 Testing Instructions
+1. Open the [Live App](https://onrender.com) or run locally.
+2. Open the **GlobalPay AI** assistant chatbox on the main dashboard.
+3. Enter a command such as **`Add $50 to my wallet`** or **`Deposit 100 EUR`**.
+4. When the inline **PayPal Sandbox Checkout** overlay appears inside the chat, click the PayPal or Debit/Credit card button to simulate payment approval.
+5. Verify that the wallet balance updates automatically on the dashboard and a receipt is generated. *(Note: Uses PayPal Sandbox—no real money is charged).*
+
+---
+
+## 📄 License
+This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
